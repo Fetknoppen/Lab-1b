@@ -20,56 +20,38 @@
 
 using namespace std;
 
-template <typename T>
-int sendMsg(T &msg, int &socket, sockaddr *addr)
+int checkMsg(calcMessage *clcMsg)
 {
-
-  int nrOf = 0;
-  while (nrOf < 3)
+  int ret = 0;
+  if (ntohs(clcMsg->type) == 2 && ntohs(clcMsg->message) == 2 && ntohs(clcMsg->major_version) == 1 && ntohs(clcMsg->minor_version) == 0)
   {
-    if (sendto(socket, &msg, sizeof(msg), 0, addr, sizeof(*addr)) < 0)
-    {
-      if (errno == EWOULDBLOCK)
-      {
-        fprintf(stderr, "socket timeout\n");
-        nrOf++;
-        continue;
-      }
-      else
-      {
-        cout << "sendto error.\n";
-        nrOf++;
-        continue;
-      }
-    }
-    //success!
-    return 0;
+    cout << "Abort";
+    ret = -1;
   }
-  cout << "Could not send.\n";
-  return -1;
-}
-
-int checkMsg(calcMessage &msg)
-{
-  if (ntohs(msg.type) == 2 &&
-      ntohl(msg.message) == 2 &&
-      ntohs(msg.major_version) == 1 &&
-      ntohs(msg.minor_version) == 0)
-  {
-    return -1;
-  }
-  return 0;
+  return ret;
 }
 
 int main(int argc, char *argv[])
 {
+  int nrOfSent = 0;
+  int bytesRecived = 0;
   //Check the initail input, whatever came before ":"
   //and whatever came after ":"
+  if (argc != 2)
+  {
+    printf("Invalid input\n");
+    exit(1);
+  }
   char delim[] = ":";
   char *Desthost = strtok(argv[1], delim);
   char *Destport = strtok(NULL, delim);
+  if (Desthost == NULL || Destport == NULL)
+  {
+    cout << "Invalid input.\n";
+    exit(1);
+  }
 
-  int port = atoi(Destport);
+  //int port = atoi(Destport);
   string ipAddr = Desthost;
 
   calcMessage msg;
@@ -88,6 +70,7 @@ int main(int argc, char *argv[])
   if (rv != 0)
   {
     fprintf(stderr, "get address info: %s\n", gai_strerror(rv));
+    exit(1);
   }
   int sock = 0;
   for (p = servinfo; p != NULL; p = p->ai_next)
@@ -102,14 +85,14 @@ int main(int argc, char *argv[])
       freeaddrinfo(servinfo);
 
       struct timeval timeout;
-      timeout.tv_sec = 2000; //2 sec
-      timeout.tv_usec = 2000;
-      if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0)
+      timeout.tv_sec = 2; //2 sec
+      timeout.tv_usec = 0;
+
+      if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0)
       {
         perror("setsockopt failed\n");
       }
-
-      if (sendMsg(msg, sock, p->ai_addr) == 1)
+      if (sendto(sock, &msg, sizeof(msg), 0, p->ai_addr, p->ai_addrlen) == -1)
       {
         cout << "Could not send message\n";
         close(sock);
@@ -122,25 +105,47 @@ int main(int argc, char *argv[])
 
   //calcProtocol msgRcv;
   calcProtocol msgRcv;
-  calcMessage testM;
-  calcProtocol testP;
-  memset(&msgRcv, 0, sizeof(msgRcv));
 
-  int bytesRecived = recvfrom(sock, &msgRcv, sizeof(msgRcv), 0, p->ai_addr, &p->ai_addrlen);
-  if (bytesRecived == -1)
+  while (nrOfSent < 3)
   {
-    cout << "Error: recvfrom\n";
-    close(sock);
-    exit(1);
+    memset(&msgRcv, 0, sizeof(msgRcv));
+    bytesRecived = recvfrom(sock, &msgRcv, sizeof(msgRcv), 0, p->ai_addr, &p->ai_addrlen);
+    if (bytesRecived < 0)
+    {
+
+      cout << "Recive timeout, sending again.\n";
+      nrOfSent++;
+      if (sendto(sock, &msg, sizeof(msg), 0, p->ai_addr, p->ai_addrlen) == -1)
+      {
+        cout << "Could not send message\n";
+        close(sock);
+        exit(1);
+      }
+      if (nrOfSent < 3)
+      {
+        continue;
+      }
+      else
+      {
+        cout << "Could not send message\n";
+        close(sock);
+        exit(1);
+      }
+    }
+    else
+    {
+      nrOfSent = 0;
+      break;
+    }
   }
 
-  cout << "size of calcProtocol: " << sizeof(testP) << ", Sizeof calcMessage: " << sizeof(testM) << ", Bytes recived: " << bytesRecived << "\n";
-
-  if (bytesRecived < sizeof(testP))
+  if (bytesRecived < (int)sizeof(msgRcv))
   {
-    //Recived a calcMessage
-    if (checkMsg(testM) == -1)
+    //Recived a calcMessage (omvandla till clacMessage)
+    calcMessage *clcMsg = (calcMessage *)&msgRcv;
+    if (checkMsg(clcMsg))
     {
+      cout << "Got a NOT OK message.\nAbort!\n";
       close(sock);
       exit(1);
     }
@@ -148,77 +153,118 @@ int main(int argc, char *argv[])
   //Recived a calcProtocol
   int i1 = ntohl(msgRcv.inValue1), i2 = ntohl(msgRcv.inValue2), iRes = ntohl(msgRcv.inResult);
   float f1 = msgRcv.flValue1, f2 = msgRcv.flValue2, fRes = msgRcv.flResult;
-
+  cout<<"Task: ";
+  string op = "";
   switch (ntohl(msgRcv.arith))
   {
   case 1: //add
-    cout << "Add\n";
+    cout << "Add "<< i1 <<" "<<i2 << endl;
     iRes = i1 + i2;
     msgRcv.inResult = htonl(iRes);
+    op = "i";
     break;
   case 2: //sub
-    cout << "Sud\n";
+    cout << "Sud "<< i1 << " "<<i2 << endl;
     iRes = i1 - i2;
     msgRcv.inResult = htonl(iRes);
+    op = "i";
     break;
   case 3: //mul
-    cout << "Mul\n";
+    cout << "Mul "<< i1 << " "<<i2 << endl;
     iRes = i1 * i2;
     msgRcv.inResult = htonl(iRes);
+    op = "i";
     break;
   case 4: //div
-    cout << "Div\n";
+    cout << "Div "<< i1 << " "<<i2 << endl;
     iRes = i1 / i2;
     msgRcv.inResult = htonl(iRes);
+    op = "i";
     break;
   case 5: //fadd
-    cout << "Fadd\n";
+    cout << "Fadd "<< f1 << " "<<f2 << endl;
     fRes = f1 + f2;
     msgRcv.flResult = fRes;
+    op = "f";
     break;
   case 6: //fsub
-    cout << "Fsub\n";
+    cout << "Fsub "<< f1 << " "<<f2 << endl;
     fRes = f1 - f2;
     msgRcv.flResult = fRes;
+    op = "f";
     break;
   case 7: //fmul
-    cout << "Fmul\n";
+    cout << "Fmul "<< f1 << " "<<f2 << endl;
     fRes = f1 * f2;
     msgRcv.flResult = fRes;
+    op = "f";
     break;
   case 8: //fdiv
-    cout << "Fdiv\n";
+    cout << "Fdiv "<< f1 << " "<<f2 << endl;
     fRes = f1 / f2;
     msgRcv.flResult = fRes;
+    op = "f";
     break;
   default:
     cout << "Cant do that operation.\n";
     break;
   }
 
-  /*if (sendto(sock, &msgRcv, sizeof(msgRcv), 0, p->ai_addr, p->ai_addrlen) == -1)
-  {
-    cout << "closing socket.\n";
-    close(sock);
-    exit(1);
-  }*/
-  if (sendMsg(msgRcv, sock, p->ai_addr) == 1)
+  if (sendto(sock, &msgRcv, sizeof(msgRcv), 0, p->ai_addr, p->ai_addrlen) == -1)
   {
     cout << "Could not send message\n";
     close(sock);
     exit(1);
   }
-  cout << "Message sent.\n";
+  if(op == "i"){
+    cout << "Sent result: "<< ntohl(msgRcv.inResult)<<"\n";
+  }
+  else{
+    cout << "Sent result: "<< msgRcv.flResult<<"\n";
+  }
+  
 
   calcMessage resp;
 
-  bytesRecived = recvfrom(sock, &resp, sizeof(resp), 0, p->ai_addr, &p->ai_addrlen);
-  if (bytesRecived == -1)
+  while (nrOfSent < 3)
   {
-    cout << "Error: recvfrom\n";
+    memset(&resp, 0, sizeof(resp));
+    bytesRecived = recvfrom(sock, &resp, sizeof(resp), 0, p->ai_addr, &p->ai_addrlen);
+    if (bytesRecived < 0)
+    {
+
+      cout << "Recive timeout, sending again.\n";
+      nrOfSent++;
+      if (sendto(sock, &msgRcv, sizeof(msgRcv), 0, p->ai_addr, p->ai_addrlen) == -1)
+      {
+        cout << "Could not send message\n";
+        close(sock);
+        exit(1);
+      }
+      if (nrOfSent < 3)
+      {
+        continue;
+      }
+      else
+      {
+        cout << "Could not send message\n";
+        close(sock);
+        exit(1);
+      }
+    }
+    else
+    {
+      nrOfSent = 0;
+      break;
+    }
+  }
+  if (checkMsg(&resp) == -1)
+  {
+    cout << "Got a NOT OK message.\nAbort!\n";
     close(sock);
     exit(1);
   }
+
   switch (ntohl(resp.message))
   {
   case 0:
@@ -231,11 +277,6 @@ int main(int argc, char *argv[])
     cout << "NOT OK\n";
     break;
   }
-
-  //Te emot som void*
-
-  //eller ta emot som calcprotocol
-  //hur många bytes tog jag emot? calcprotocol är större bytes casta
 
   close(sock);
   return 0;
